@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.venv/
+
+# Large source data and generated experiment artifacts are delivered separately.
+data/BSDS500/
+data/smoke_bsds/
+data/manifests/*.jsonl
+checkpoints/
+results/
