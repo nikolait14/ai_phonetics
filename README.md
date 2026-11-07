@@ -1,5 +1,10 @@
 # Нейросетевой синтез дифракционных оптических элементов (ДОЭ)
 
+Текущий план архитектурных абляций и спецификация эксперимента B находятся в
+[`architecture.md`](architecture.md).
+Проверенные выводы EDA, ограничения их интерпретации и применимые изменения собраны в
+[`EDA_SUMMARY.md`](EDA_SUMMARY.md).
+
 Проект по теме «Разработка нейросетевого метода синтеза дифракционных оптических элементов»
 (лаборатория «Фотоника и информационная оптика», каф. № 37 «Лазерная физика»).
 
@@ -335,6 +340,29 @@ python -m unittest discover -s tests -v
 Baseline обучается в `notebooks/train_baseline_kaggle.ipynb`: подключите созданный Kaggle Dataset, проверьте
 `KAGGLE_DATASET_DIR` в первой ячейке и выполните notebook целиком. Он сохранит `best.pt`, `last.pt`,
 `metrics.csv` и `config.json` в `/kaggle/working/baseline_run/`.
+
+Эксперимент B запускается отдельно из `notebooks/train_experiment_b_kaggle.ipynb`. В нём четыре плоскости
+обрабатываются shared encoder, получают embeddings физических расстояний и объединяются на каждом масштабе;
+результаты сохраняются в `/kaggle/working/experiment_b_run/`. Baseline-notebook при этом не изменяется.
+
+Перед полным запуском unit-complex головы её можно дёшево проверить в
+`notebooks/test_unit_complex_head_kaggle.ipynb`: notebook обучает `tanh` и `complex` варианты эксперимента B
+на одинаковых подмножествах и автоматически формирует рекомендацию в
+`/kaggle/working/unit_complex_screen/summary.json`.
+
+Перед полным обучением эксперимента B используйте `notebooks/screen_experiment_b_kaggle.ipynb`. Он сравнивает
+исходный `BaselineUNet` и `SharedDepthUNet` на одинаковом небольшом subset и сохраняет рекомендацию в
+`/kaggle/working/experiment_b_screen/summary.json`.
+Для контрольной репликации на том же subset с другой инициализацией используется
+`notebooks/screen_experiment_b_seed43_kaggle.ipynb`; его результаты сохраняются отдельно в
+`/kaggle/working/experiment_b_screen_seed43/`.
+
+Dataset v2 создаётся и проверяется notebook
+`notebooks/build_audit_screen_dataset_v2_kaggle.ipynb`. Он использует BSDS500 из подключённого dataset v1,
+создаёт синтетику с контролируемой заполненностью и фоном, добавляет многомасштабные натуральные кропы и
+режим целой сцены, выполняет аудит и затем коротко сравнивает baseline с экспериментом B. Выходы:
+`/kaggle/working/ai_phonetics_data_v2.zip`, `/kaggle/working/dataset_v2_audit/` и
+`/kaggle/working/dataset_v2_screen/`.
 
 Перед сменой архитектуры запустите `notebooks/eda_kaggle.ipynb`. Он проверяет пропорции источников,
 переиспользование натуральных файлов, разреженность, энтропию, долю высоких частот и похожесть изображений
