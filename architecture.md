@@ -132,6 +132,78 @@ output: (B, 1, 128, 128), phase in [-π, π]
 процедурные объекты и натуральные текстуры. Эксперты объединяются на уровне признаков, после чего один общий
 decoder строит фазу.
 
+### F. HarmonicMoE — активная сложная архитектура
+
+Поверх shared plane-wise encoder добавляются три bottleneck-эксперта:
+
+- spatial residual expert для локальных контуров и малых объектов;
+- cross-plane Transformer expert для глобального конфликта четырёх глубин;
+- Fourier expert с обучаемым комплексным спектральным фильтром;
+- sample-wise gate по статистикам входа и pooled expert features;
+- balance loss, препятствующий раннему схлопыванию gate в одного эксперта.
+
+Эксперты объединяются на уровне признаков, поэтому результатом остаётся одна фазовая маска. Полная система,
+включая слой Френеля и loss, оборачивается в `DataParallel`, чтобы FFT также считался на обеих GPU.
+
+### G. Learned phase harmonizer и DDP — финальный сложный pipeline
+
+После первичной маски HarmonicMoE выполняется один фиксированный физически информированный correction-stage:
+
+```text
+phi0 = HarmonicMoE(X)
+R0 = Fresnel(phi0)
+delta = Harmonizer([X, R0, X - R0, phi0/pi])
+phi_final = arg(exp(i phi0) * delta_unit_complex)
+R_final = Fresnel(phi_final)
+```
+
+Harmonizer инициализируется единичной комплексной поправкой и не меняет первичную фазу в начале обучения.
+Loss содержит основную метрику финального восстановления, вспомогательную метрику первичной маски и малый
+штраф на величину поправки. Это два фиксированных learned-stage без итеративной оптимизации на инференсе.
+
+Обучение переведено на `DistributedDataParallel`: `torchrun` создаёт отдельный процесс на каждую GPU,
+каждый процесс считает backbone, оба прохода Френеля, harmonizer и локальный loss.
+
+#### Полная карта тензоров
+
+| Этап | Операция | Выход |
+|---|---|---|
+| Вход | 4 max-normalized изображения | `(B,4,128,128)` |
+| Plane reshape | каждое изображение обрабатывается отдельно общими весами | `(4B,1,128,128)` |
+| Encoder L0 | `DoubleConv 1→32`, depth embedding, plane fusion для skip | planes `(B,4,32,128,128)`, skip `(B,32,128,128)` |
+| Encoder L1 | `DoubleConv 32→64` | planes `(B,4,64,64,64)`, skip `(B,64,64,64)` |
+| Encoder L2 | `DoubleConv 64→128` | planes `(B,4,128,32,32)`, skip `(B,128,32,32)` |
+| Encoder L3 | `DoubleConv 128→256` | planes `(B,4,256,16,16)`, skip `(B,256,16,16)` |
+| Bottleneck | `DoubleConv 256→512` | `(B,4,512,8,8)` |
+| Spatial expert | residual `512→256→512`, depthwise `3×3` | `(B,512,8,8)` |
+| Transformer expert | `256` tokens, `512→256`, 2 layers, 8 heads, FFN `768`, plane fusion | `(B,512,8,8)` |
+| Fourier expert | `512→128`, `rfft2 8×5`, complex weights, `irfft2`, `128→512`, plane fusion | `(B,512,8,8)` |
+| Gate | 16 image stats + 1536 pooled expert features, MLP `1552→256→3`, softmax | `(B,3)` |
+| Expert fusion | взвешенная сумма трёх expert maps | `(B,512,8,8)` |
+| Decoder | `512→256→128→64→32` со skip connections | `(B,32,128,128)` |
+| Initial head | `Conv1×1`, `π·tanh` | `phi0: (B,1,128,128)` |
+| Fresnel pass 1 | четыре расстояния | `R0: (B,4,128,128)` |
+| Harmonizer input | `[target(4), R0(4), target-R0(4), phi0/π(1)]` | `(B,13,128,128)` |
+| Harmonizer encoder | `13→32→64→128`, bottleneck `128` | `(B,128,16,16)` |
+| Harmonizer decoder | `128→128→64→32`, skip connections | `(B,32,128,128)` |
+| Circular correction | 2 канала, unit-complex normalization | `(B,2,128,128)` |
+| Final phase | `arg(exp(i·phi0)·correction)` | `(B,1,128,128)` |
+| Fresnel pass 2 | четыре расстояния | `(B,4,128,128)` |
+
+Полный loss:
+
+```text
+L = L_metric(final)
+  + 0.2 * L_metric(initial)
+  + 0.01 * mean(1 - cos(delta_phi))
+  + 0.01 * L_gate_balance
+
+L_metric = mean[(1 - CC) + 1.5 * (1 - SSIM)]
+```
+
+Исходный код архитектуры находится в `src/models/harmonic_moe_harmonizer.py`. Kaggle notebook содержит ту
+же модель внутри генерируемого DDP script, поэтому остаётся self-contained.
+
 ## 6. Требования к EDA
 
 EDA должен связать свойства данных с качеством baseline, а не ограничиваться общими гистограммами.
@@ -182,5 +254,14 @@ EDA определяет следующий шаг:
 
 ## 8. Текущий следующий шаг
 
-Текущий активный эксперимент — **B: shared encoder + distance embeddings**. После его запуска результаты
-сравниваются с baseline. Эксперимент C не начинается до получения метрик B и выводов EDA.
+Эксперимент B завершён: shared encoder + distance embeddings устойчиво улучшает КК и худшую плоскость, но
+на dataset v2 ухудшает ИСС синтетических изображений. Первый sweep веса SSIM был недействителен: из-за
+ошибки реализации все ветки фактически использовали множитель `1.1`.
+
+Исправленный sweep завершён: shared-depth с весом SSIM `1.5` прошёл критерии на seed 42, а на seed 43
+улучшил обе средние и обе худшие метрики, хотя прирост КК оказался ниже консервативного порога. Средний эффект
+двух seed положителен.
+
+Shared-depth v1 остаётся контрольной архитектурой. Финальный сложный кандидат — HarmonicMoE с learned phase
+harmonizer. Loss сохраняет вес SSIM `1.5`; luminance loss не используется. Обучение выполняется на полном
+dataset v2 через двух-GPU DDP и float16 render cache. Точные числа находятся в `EXPERIMENT_LOG.md`.

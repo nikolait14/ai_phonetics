@@ -4,6 +4,8 @@
 [`architecture.md`](architecture.md).
 Проверенные выводы EDA, ограничения их интерпретации и применимые изменения собраны в
 [`EDA_SUMMARY.md`](EDA_SUMMARY.md).
+Все фактические результаты запусков, принятые и отклонённые гипотезы и текущий следующий эксперимент
+ведутся в [`EXPERIMENT_LOG.md`](EXPERIMENT_LOG.md).
 
 Проект по теме «Разработка нейросетевого метода синтеза дифракционных оптических элементов»
 (лаборатория «Фотоника и информационная оптика», каф. № 37 «Лазерная физика»).
@@ -363,6 +365,40 @@ Dataset v2 создаётся и проверяется notebook
 режим целой сцены, выполняет аудит и затем коротко сравнивает baseline с экспериментом B. Выходы:
 `/kaggle/working/ai_phonetics_data_v2.zip`, `/kaggle/working/dataset_v2_audit/` и
 `/kaggle/working/dataset_v2_screen/`.
+
+После принятия dataset v2 вес SSIM для shared-depth архитектуры подбирается в
+`notebooks/screen_ssim_weight_v2_kaggle.ipynb`. Notebook сравнивает baseline с весом `1.1` и три одинаково
+инициализированных shared-depth запуска с весами `1.1`, `1.5`, `2.0`, отдельно считает метрики для
+синтетики, BSDS и каждой плоскости и сохраняет решение в
+`/kaggle/working/ssim_weight_screen_v2/summary.json`. Полное обучение запускается только для кандидата,
+который сохраняет выигрыш по КК без существенной просадки ИСС и худшей плоскости. Прошедший кандидат сначала
+повторяется на втором seed; только воспроизводимый результат переносится в полный запуск.
+Репликация текущего кандидата shared-depth с весом `1.5` находится в
+`notebooks/replicate_shared_a15_seed43_v2_kaggle.ipynb` и сохраняет результат в
+`/kaggle/working/shared_a15_seed43_v2/summary.json`.
+
+Финальная архитектура v1 зафиксирована как shared-depth с весом SSIM `1.5`; следующий этап — полное обучение
+на всех `24 000` train-четвёрках dataset v2. Notebook
+`notebooks/screen_luminance_loss_v2_kaggle.ipynb` проверил luminance loss; гипотеза отклонена из-за
+незначимого роста официального ИСС при ухудшении КК и worst-plane.
+
+Полное обучение запускается в `notebooks/train_final_shared_v2_kaggle.ipynb`. Notebook использует весь
+train/validation dataset v2, поддерживает resume, сохраняет отдельные checkpoints по joint loss, КК и ИСС и
+проверяет экспорт после 8-битного квантования ДОЭ. Результаты записываются в
+`/kaggle/working/final_shared_v2/`.
+
+Сложный кандидат с экспертами обучается в `notebooks/train_moe_dataparallel_v2_kaggle.ipynb`. HarmonicMoE
+содержит spatial, cross-plane Transformer и Fourier experts, объединяемые gate. Весь end-to-end путь,
+включая Френель и loss, запускается через две GPU с `DataParallel`; float16 render cache снижает CPU-нагрузку
+после одноразовой подготовки данных. Выход: `/kaggle/working/moe_dataparallel_v2/`.
+
+Актуальный финальный сложный pipeline находится в
+`notebooks/train_moe_harmonizer_ddp_v2_kaggle.ipynb`: DataParallel заменён на двухпроцессный DDP, а после
+HarmonicMoE добавлен один learned phase harmonizer с внутренним Fresnel feedback. Результатом остаётся одна
+фазовая маска, итеративной оптимизации на инференсе нет. Выход:
+`/kaggle/working/moe_harmonizer_ddp_v2/`.
+Читаемая реализация всех блоков модели вынесена в `src/models/harmonic_moe_harmonizer.py`, а полная карта
+тензоров приведена в `architecture.md`.
 
 Перед сменой архитектуры запустите `notebooks/eda_kaggle.ipynb`. Он проверяет пропорции источников,
 переиспользование натуральных файлов, разреженность, энтропию, долю высоких частот и похожесть изображений
